@@ -1,1 +1,10 @@
-.venv/
+# caches et modèles
+llm_cache_*.sqlite
+models/
+*.pt
+*.bin
+outputs/
+*.csv
+.vscode/
+__pycache__/
+*.pyc
