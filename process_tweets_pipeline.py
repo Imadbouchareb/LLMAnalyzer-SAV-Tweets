@@ -500,9 +500,8 @@ def main():
     df["top_emotions"] = emo_scores.map(lambda x: x[1])
 
     urg = df["_norm"].apply(detect_urgency)
-    df["is_urgent"]    = int  # keep signature
-    df["is_urgent"]    = df["_norm"].apply(lambda s: detect_urgency(s)[0]).astype(int)
-    df["urgency_hits"] = df["_norm"].apply(lambda s: detect_urgency(s)[1])
+    df["is_urgent"] = urg.map(lambda x: x[0]).astype(int)
+    df["urgency_hits"] = urg.map(lambda x: x[1])
 
     intents = df["_norm"].apply(classify_intents)
     df["labels"]        = intents.map(lambda x: x[0])
