@@ -43,22 +43,14 @@ def count_open_like_agent(df: pd.DataFrame) -> int:
 def load_df(path: str) -> pd.DataFrame:
     df = pd.read_csv(path, low_memory=False)
 
-    # Gestion de la colonne date - ne pas écraser si created_at_dt existe déjà
-    if "created_at_dt" not in df.columns:
-        ca = df.get("created_at")
-        if ca is not None:
-            try:
-                df["created_at_dt"] = pd.to_datetime(ca, errors="coerce", utc=True).dt.tz_convert(None)
-            except Exception:
-                df["created_at_dt"] = pd.to_datetime(ca, errors="coerce")
-        else:
-            df["created_at_dt"] = pd.NaT
-    else:
-        # Si created_at_dt existe déjà, la parser correctement
+    ca = df.get("created_at")
+    if ca is not None:
         try:
-            df["created_at_dt"] = pd.to_datetime(df["created_at_dt"], errors="coerce")
+            df["created_at_dt"] = pd.to_datetime(ca, errors="coerce", utc=True).dt.tz_convert(None)
         except Exception:
-            pass
+            df["created_at_dt"] = pd.to_datetime(ca, errors="coerce")
+    else:
+        df["created_at_dt"] = pd.NaT
 
     tcol = _trycol(df, ["text_masked", "text_clean", "text_raw", "text_for_llm"]) or "text_raw"
     if tcol != "text_display":
@@ -78,24 +70,17 @@ def load_df(path: str) -> pd.DataFrame:
     if "suggested_reply" not in df and "llm_reply_suggestion" in df:
         df["suggested_reply"] = df["llm_reply_suggestion"]
 
-    # Gestion des thèmes - ne pas écraser si themes_list existe déjà
-    if "themes_list" not in df.columns:
-        if "themes" in df.columns:
-            df["themes_list"] = df["themes"].apply(_aslist)
-        else:
-            df["themes_list"] = [[] for _ in range(len(df))]
+    if "themes" in df.columns:
+        df["themes_list"] = df["themes"].apply(_aslist)
     else:
-        # Si themes_list existe déjà, la parser correctement (peut être une chaîne JSON)
-        df["themes_list"] = df["themes_list"].apply(_aslist)
+        df["themes_list"] = [[] for _ in range(len(df))]
 
     df["prio_score"] = df.apply(_prio_score, axis=1)
 
     if "status" not in df:
         df["status"] = ""
 
-    # Gestion de l'auteur - ne pas écraser si author existe déjà
-    if "author" not in df.columns:
-        df["author"] = df.get("screen_name", df.get("user", ""))
+    df["author"] = df.get("screen_name", df.get("user", ""))
 
     return df
 

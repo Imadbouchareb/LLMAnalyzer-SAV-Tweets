@@ -8,7 +8,7 @@ DEFAULT_CFG = {
     "data": {"prio_threshold": 0.70},
     "ui": {"page_size": 15, "scroll_where": "top", "pin_selected_first": True},
     "paths": {
-        "csv_path": r"C:\Users\hallo\OneDrive\Bureau\IA Free Mobile\sav_app\tweets_scored_llm.csv"
+        "csv_path": r"C:\Users\hallo\OneDrive\Bureau\IA Free Mobile\IA Free Mobile\tweets_scored_llm.csv"
     },
     "llm": {"temperature": 0.2, "max_tokens": 512},
 }

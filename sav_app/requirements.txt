@@ -1,0 +1,22 @@
+# Core Framework
+streamlit>=1.28.0
+
+# Data Processing
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Visualization
+altair>=5.0.0
+plotly>=5.14.0
+matplotlib>=3.7.0
+
+# Data Grid (optional but recommended)
+streamlit-aggrid>=0.3.4
+
+# Utilities
+python-dateutil>=2.8.2
+openpyxl>=3.1.0  # For Excel support
+xlrd>=2.0.1      # For Excel support
+
+# Optional: For better performance
+pyarrow>=12.0.0
