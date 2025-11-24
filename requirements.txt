@@ -1,9 +1,0 @@
-streamlit
-langchain
-langchain-ollama
-langchain-groq
-langchain-chroma
-chromadb
-ollama
-PyPDF2
-python-dotenv
