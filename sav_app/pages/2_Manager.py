@@ -59,8 +59,6 @@ alt.data_transformers.disable_max_rows()
 # ------------------------------------------------------------------------------
 def show_white_table(df: pd.DataFrame, height: int = 320, key: str = None):
     """Affiche un DataFrame en mode tableau blanc (style Agent SAV) via AgGrid."""
-    # Supprimer les colonnes dupliquées si elles existent
-    df = df.loc[:, ~df.columns.duplicated()]
     if AGGRID_OK:
         # Configuration AgGrid pour matcher le style Agent
         gb = GridOptionsBuilder.from_dataframe(df)
@@ -1508,7 +1506,7 @@ def _prepare_manager_df(df: pd.DataFrame) -> pd.DataFrame:
     # 2. Texte affichable
     text_candidates = [
         "text_raw",
-        "text_raw",
+        "text_display",
         "tweet",
         "text",
         "content",
@@ -2071,7 +2069,7 @@ else:
             "llm_urgency_0_3",
             "llm_severity_0_3",
             "status",
-            "text_raw",
+            "text_display",
         ]
     ]
 
@@ -2162,6 +2160,8 @@ else:
         col1.metric("Tweets", f"{len(flt_graph):,}")
         col2.metric("Pourcentage urgent", f"{100 * (flt_graph['llm_urgency_0_3'] >= 2).mean():.1f} %")
         
+        # Debug: afficher les valeurs uniques de sentiment
+                
         col3.metric("Pourcentage négatif", f"{100 * (flt_graph['sentiment_label'].fillna('').str.lower().str.startswith(('neg', 'nég'))).mean():.1f} %")
         col4.metric("Auteurs uniques", f"{flt_graph['author'].nunique():,}")
         col5.metric("Urgence moyenne", f"{flt_graph['llm_urgency_0_3'].mean():.2f}")
@@ -2171,11 +2171,6 @@ else:
 
         # Export (seulement les ouverts / à traiter)
         open_view = flt_graph[flt_graph["status"].astype(str).str.strip() != ""].copy()
-        
-        # Dédupliquer les colonnes si nécessaire (évite l'erreur orient='records')
-        if open_view.columns.duplicated().any():
-            open_view = open_view.loc[:, ~open_view.columns.duplicated()]
-        
         st.caption(f"{len(open_view):,} ticket(s) ouverts / à traiter dans la vue actuelle.")
         if open_view.empty:
             st.info("Aucun ticket ouvert / à traiter à exporter avec les filtres actuels.")
@@ -2537,7 +2532,7 @@ else:
                     "llm_urgency_0_3",
                     "llm_severity_0_3",
                     "status",
-                    "text_raw",
+                    "text_display",
                 ]
                 cols_presentes = [c for c in all_cols if c in flt_graph.columns]
 

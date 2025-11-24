@@ -271,7 +271,7 @@ def _prepare_agent_df(df_in: pd.DataFrame) -> pd.DataFrame:
 
     # 3. texte du tweet
     text_col = next(
-        (c for c in ["text_raw","text_raw", "text", "tweet", "content", "body"] if c in df.columns),
+        (c for c in ["text_raw","text_display", "text", "tweet", "content", "body"] if c in df.columns),
         None,
     )
     df["text_raw"] = df[text_col].astype(str) if text_col else ""
@@ -819,8 +819,6 @@ with main:
                     "assigned_to",
                 ]
             ].copy()
-            # Supprimer les colonnes dupliquées si elles existent (ex: text_raw en double)
-            queue_view = queue_view.loc[:, ~queue_view.columns.duplicated()]
             queue_view["thèmes"] = queue_view["themes_list"].apply(lambda L: ", ".join(L[:3]))
             queue_view = queue_view.drop(columns=["themes_list"])
             queue_view = queue_view.rename(
@@ -1079,8 +1077,6 @@ with main:
                     "themes_list",
                 ]
             ].copy()
-            # Supprimer les colonnes dupliquées
-            urgent_view = urgent_view.loc[:, ~urgent_view.columns.duplicated()]
             urgent_view["Thèmes"] = urgent_view["themes_list"].apply(
                 lambda L: ", ".join(L[:3])
             )

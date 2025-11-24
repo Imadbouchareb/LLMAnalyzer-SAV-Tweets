@@ -48,8 +48,6 @@ st.set_page_config(
 
 hide_sidebar()
 inject_style()
-set_container_wide()
-inject_sticky_css()
 
 # --- THEME ALTAIR ---
 def custom_light_theme():
