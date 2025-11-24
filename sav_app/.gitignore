@@ -1,0 +1,36 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Environnements virtuels
+env/
+ENV/
+.venv/
+
+# Dossiers sensibles
+uploads/
+data/uploads/
+
+# Git nested
+.git/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Données temporaires
+*.tmp
+*.bak

@@ -14,26 +14,11 @@ venv/
 env/
 ENV/
 .venv
-*.pyc
 
 # Base de données - IMPORTANT : Ne pas pusher les données
 database/
 *.sqlite3
 *.db
-llm_cache_*.sqlite
-
-# Modèles et fichiers volumineux
-models/
-*.pt
-*.bin
-outputs/
-
-# CSV - bloquer tous sauf KB
-*.csv
-!kb_replies_rich_expanded.csv
-*.csv.gz
-*.pkl
-*.pickle
 
 # IDE
 .vscode/
@@ -54,4 +39,8 @@ desktop.ini
 .streamlit/secrets.toml
 
 # Fichiers volumineux et données sensibles
-old/
+old/database/
+old/*.csv
+*.csv.gz
+*.pkl
+*.pickle
