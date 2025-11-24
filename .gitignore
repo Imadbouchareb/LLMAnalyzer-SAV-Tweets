@@ -1,0 +1,14 @@
+﻿# caches et modèles
+llm_cache_*.sqlite
+models/
+*.pt
+*.bin
+outputs/
+
+# CSV - bloquer tous sauf KB
+*.csv
+!kb_replies_rich_expanded.csv
+
+.vscode/
+__pycache__/
+*.pyc
