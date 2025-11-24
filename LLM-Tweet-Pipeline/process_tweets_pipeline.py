@@ -1,4 +1,4 @@
-# nouvelle version process_tweets_pipeline.py
+# process_tweets_pipeline.py
 # ------------------------------------------------------------
 # Usage:
 #   python process_tweets_pipeline.py free_tweet_export.csv
@@ -19,29 +19,6 @@ from datetime import datetime
 import pandas as pd
 import numpy as np
 from pathlib import Path
-
-import spacy
-from nltk.corpus import stopwords
-
-# ...
-try:
-    import ftfy
-except Exception:
-    ftfy = None
-
-# --- AJOUT : Charger les modèles pour le Pipeline Lourd ---
-try:
-    nlp = spacy.load("fr_core_news_sm")
-    # S'assurer que les stop words NLTK sont téléchargés
-    import nltk
-    nltk.download('stopwords', quiet=True)
-    stop_words = set(stopwords.words('french'))
-    # On peut enrichir la liste de stop words si besoin
-    stop_words.update(['<url>', '<user>', '<brand:free>', '<brand:freebox>', '<brand:freemobile>']) 
-except Exception as e:
-    print(f"Attention: Spacy/NLTK non chargés. Le pipeline lourd échouera. Erreur: {e}")
-    nlp = None
-    stop_words = set()
 
 # Libs optionnelles
 try:
@@ -149,9 +126,6 @@ def mention_to_token(m):
     return f"{prefix}<USER>"
 
 ABBREV_MAP = {
-    "co": "connexion",
-    "pck": "parce que","pcq":"parce que","psk":"parce que","parsk":"parce que",
-    "pk":"pourquoi","pq":"pourquoi",
     "svp":"s'il vous plaît","stp":"s'il te plaît","pls":"s'il te plaît",
     "cdt":"cordialement","ps":"post-scriptum",
     "qd":"quand","tt":"tout","bcp":"beaucoup",
@@ -238,24 +212,41 @@ def demap_structure(s: str) -> str:
     """Convertit nos marqueurs en vrais retours à la ligne pour le LLM."""
     return s.replace(' <PARA> ', '\n\n').replace(' <NL> ', '\n')
 
-def create_text_for_llm(raw_text: str) -> str:
+def clean_tweet_text(text: str):
     """
-    Nettoyage "léger" pour les LLM (Solution B), basé sur Partie 1.4.
-    Préserve la casse, la ponctuation, les stop-words.
-    Supprime uniquement le bruit technique (URL, Mentions).
+    text_clean: texte pour règles/analyses, avec sauts de ligne mappés:
+      - '\n\n' -> ' <PARA> '
+      - '\n'   -> ' <NL> '
+    Mentions brand-aware, URLs -> <URL>, compaction lettres.
+    Retourne (text_clean, text_for_llm) où text_for_llm contient de vrais \n.
     """
-    if not isinstance(raw_text, str):
-        return ""
+    if not isinstance(text, str):
+        return "", ""
 
-    # Applique les mêmes regex que votre script original pour URL/Mentions
-    # mais SANS la conversion en minuscules, SANS les abréviations, SANS RT_PREFIX
-    tmp = URL_RE.sub('<URL>', raw_text)
-    tmp = MENTION_RE.sub(mention_to_token, tmp)
-    
-    # (Optionnel) Gérer les emojis comme vous le faisiez
+    raw = fix_text(text)
+
+    tmp = RT_PREFIX_RE.sub('', raw)                 # retire "RT @user:"
+    tmp = URL_RE.sub('<URL>', tmp)                  # URLs -> <URL>
+    tmp = MENTION_RE.sub(mention_to_token, tmp)     # @brand / @user
+    tmp = ELLONG_RE.sub(r'\1\1', tmp)               # loooong letters -> 2
+
+    # Abréviations
+    if ABBREV_TOKEN_RE:
+        tmp = ABBREV_TOKEN_RE.sub(lambda m: ABBREV_MAP.get(m.group(0).lower(), m.group(0)), tmp)
+    for rgx, repl in ABBREV_REGEX_RULES:
+        tmp = rgx.sub(repl, tmp)
+
+    # Mapping des sauts de ligne en jetons + espaces propres
+    tmp = tmp.replace('\n\n', ' <PARA> ').replace('\n', ' <NL> ')
+    tmp = re.sub(r'[ ]{2,}', ' ', tmp).strip()
+
+    text_clean   = tmp
+    text_for_llm = demap_structure(text_clean)  # vrais \n pour le LLM
+
+    # (Optionnel) alias d'emojis
     if emoji is not None:
         try:
-            found = emoji.emoji_list(tmp)
+            found = emoji.emoji_list(text_for_llm)
             if found:
                 aliases = []
                 for item in found[:6]:
@@ -264,57 +255,12 @@ def create_text_for_llm(raw_text: str) -> str:
                         aliases.append(emoji.demojize(ch))
                 aliases = list(dict.fromkeys(aliases))
                 if aliases:
-                    tmp = f"{tmp} [emoji: {' '.join(aliases)}]"
+                    text_for_llm = f"{text_for_llm} [emoji: {' '.join(aliases)}]"
         except Exception:
             pass
 
-    return tmp.strip()
+    return text_clean, text_for_llm
 
-# --- NOUVELLE FONCTION (Pipeline Lourd) ---
-def create_text_for_local_ml(raw_text: str) -> str:
-    """
-    Nettoyage "lourd" pour le ML classique (Solution A), basé sur Partie 1.2.
-    - Minuscules
-    - Suppression URL/Mentions/RT
-    - Expansion abréviations
-    - Suppression ponctuation
-    - Suppression Stop Words
-    - Lemmatisation
-    """
-    if not isinstance(raw_text, str) or nlp is None:
-        return ""
-
-    # 1. Reprendre la logique de votre 'clean_tweet_text' originale
-    tmp = RT_PREFIX_RE.sub('', raw_text)    
-    tmp = ELLONG_RE.sub(r'\1\1', tmp)
-
-    if ABBREV_TOKEN_RE:
-        tmp = ABBREV_TOKEN_RE.sub(lambda m: ABBREV_MAP.get(m.group(0).lower(), m.group(0)), tmp)
-    for rgx, repl in ABBREV_REGEX_RULES:
-        tmp = rgx.sub(repl, tmp)
-    
-    # 2. Normalisation (Minuscules, accents)
-    tmp = strip_accents(tmp.lower())
-
-    # 3. NOUVEAU : Lemmatisation et suppression des stop-words/ponctuation
-    # Nous utilisons Spacy pour tokeniser, lemmatiser et filtrer
-    doc = nlp(tmp)
-    tokens = []
-    for token in doc:
-        # Garder uniquement les tokens alpha, qui ne sont pas des stop words
-        # et dont le lemme n'est pas un stop word
-        if (token.is_alpha and 
-            token.text not in stop_words and 
-            token.lemma_ not in stop_words):
-            tokens.append(token.lemma_) # Utiliser le lemme
-
-    # 4. Reconstituer le texte nettoyé
-    return " ".join(tokens)
-# --- FIN NOUVELLE FONCTION ---
-
-
-# Votre ancienne fonction clean_tweet_text n'est plus nécessaire.
-# Vous pouvez la supprimer ou la commenter.
 
 # ---------------------------
 # Extraction d'entités & features
@@ -520,11 +466,9 @@ def main():
     # --- FIN AJOUT FILTRES ---
 
     # Nettoyage + version LLM
-    print("[INFO] Application du pipeline de nettoyage Léger (LLM)...")
-    df["text_for_llm"] = df["text_raw"].apply(create_text_for_llm)
-    
-    print("[INFO] Application du pipeline de nettoyage Lourd (Local ML)...")
-    df["text_for_local_ml"] = df["text_raw"].apply(create_text_for_local_ml)
+    out_clean = df["text_raw"].apply(lambda s: clean_tweet_text(s))
+    df["text_clean"]   = out_clean.map(lambda x: x[0])
+    df["text_for_llm"] = out_clean.map(lambda x: x[1])
 
     # Entités & compteurs (sur brut)
     ents = df["text_raw"].apply(extract_entities)
@@ -535,14 +479,14 @@ def main():
 
     # Langue
     if detect is not None:
-        df["lang"] = df["text_for_llm"].apply(detect_lang)
+        df["lang"] = df["text_clean"].apply(detect_lang)
         df["is_french"] = df["lang"].map(lambda x: x.startswith('fr'))
     else:
         df["lang"] = ""
         df["is_french"] = True
 
     # Normalisation pour matching
-    df["_norm"] = df["text_for_llm"].map(normalize_for_match)
+    df["_norm"] = df["text_clean"].map(normalize_for_match)
 
     df["contains_free"] = df["text_raw"].str.contains(
         r'\bfree\b|@OQEEbyFree|@Free_1337|@Freebox|@freemobile|@UniversFreebox|#Free_1337|#Freebox|#freemobile|Freebox|iliad|@Xavier75',
@@ -587,7 +531,7 @@ def main():
 
     final_cols = [
         "tweet_id","created_at","user","screen_name","account_type",
-        "text_raw","text_for_llm","text_for_local_ml",
+        "text_raw","text_clean","text_for_llm",
         "lang","is_french",
         "contains_free",
         "n_urls","n_mentions","n_emojis","hashtags",
