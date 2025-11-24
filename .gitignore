@@ -1,0 +1,45 @@
+# Environnement et secrets
+.env
+.env.local
+.env.*.local
+*.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+
+# Base de données - IMPORTANT : Ne pas pusher les données
+database/
+*.sqlite3
+*.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Fichiers volumineux et données sensibles
+old/
+*.csv.gz
+*.pkl
+*.pickle
