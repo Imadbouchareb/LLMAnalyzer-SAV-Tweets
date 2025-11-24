@@ -14,7 +14,7 @@ os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 
-import argparse, json, time, sqlite3, hashlib, sys
+import argparse, json, time, sqlite3, hashlib, sys, csv, re
 from typing import List, Dict, Optional
 import numpy as np
 import pandas as pd
@@ -117,6 +117,246 @@ def reply_template(intent: str, sentiment: str, urgency: int) -> str:
         add = " Donnez-nous en DM votre code postal et une description rapide de l’incident."
     return (base + add).strip()
 
+
+# ---------------------------
+# KB / RAG helpers (local, silent if absent)
+# ---------------------------
+def load_kb_rich(path: str) -> List[Dict]:
+    """Charge la KB CSV UTF-8. Retourne liste de dicts avec colonnes attendues.
+    Silencieux si fichier absent/illisible: retourne [].
+    """
+    cols = [
+        "body","cta","intent","lang","length","opener","reply","source_intent_col",
+        "source_sentiment_col","source_theme_col","subintent","tags","tone","urgency_bucket",
+    ]
+    if not path or not os.path.exists(path):
+        return []
+    try:
+        dfk = pd.read_csv(path, encoding="utf-8", dtype=str, keep_default_na=False)
+    except Exception:
+        return []
+    rows = []
+    for _, r in dfk.iterrows():
+        row = {c: (r[c] if c in dfk.columns else "") for c in cols}
+        # ensure strings
+        for k in row:
+            if pd.isna(row[k]):
+                row[k] = ""
+            row[k] = str(row[k])
+        rows.append(row)
+    return rows
+
+
+def normalize_intent(x: str) -> str:
+    if not x:
+        return "Generic"
+    s = x.strip().lower()
+    mapping = {
+        "factur": "Facturation",
+        "paiement": "Facturation",
+        "reseau": "Reseau/Internet",
+        "internet": "Reseau/Internet",
+        "box": "Box/TV",
+        "freebox": "Box/TV",
+        "mobile": "Mobile/SIM/Portabilite",
+        "sim": "Mobile/SIM/Portabilite",
+        "portabil": "Mobile/SIM/Portabilite",
+        "sav": "Support/SAV/Reclamation",
+        "réclamation": "Support/SAV/Reclamation",
+        "reclamation": "Support/SAV/Reclamation",
+        "support": "Support/SAV/Reclamation",
+        "compte": "Compte/Acces",
+        "connexion": "Compte/Acces",
+
+        # nouveaux mappages utiles
+        "commande": "Support/SAV/Reclamation",
+        "livraison": "Support/SAV/Reclamation",
+        "resiliation": "Support/SAV/Reclamation",
+        "insatisfaction": "Support/SAV/Reclamation",
+        "colère": "Support/SAV/Reclamation",
+        "securite": "Support/SAV/Reclamation",
+        "fraude": "Support/SAV/Reclamation",
+        "commercial": "Generic",
+        "offre": "Generic",
+        "annonce": "Generic",
+        "marketing": "Generic",
+        "incident/actualit": "Reseau/Internet",
+    }
+    for k, v in mapping.items():
+        if k in s:
+            return v
+    for cand in (
+        "Facturation","Reseau/Internet","Box/TV","Mobile/SIM/Portabilite",
+        "Support/SAV/Reclamation","Compte/Acces"
+    ):
+        if cand.lower() in s:
+            return cand
+    return "Generic"
+
+
+def infer_tone_from(s_label: str, urg: Optional[int]) -> str:
+    try:
+        if urg is not None and int(urg) >= 2:
+            return "neg"
+    except Exception:
+        pass
+    s = (s_label or "").strip().lower()
+    if any(k in s for k in ("neg","nég","negative","négatif")):
+        return "neg"
+    if any(k in s for k in ("pos","positif","positive","positif")):
+        return "pos"
+    return "neu"
+
+
+def infer_urgency_bucket(urg: Optional[int]) -> str:
+    if urg is None:
+        return "unknown"
+    try:
+        u = int(urg)
+    except Exception:
+        return "unknown"
+    if u <= 0:
+        return "low"
+    if u == 1:
+        return "normal"
+    return "high"
+
+
+def get_subintent_hint(df_row) -> str:
+    # prefer explicit theme columns if present
+    for col in ("primary_theme","themes_primary","themes","source_theme_col","theme","topic"):
+        if col in df_row and df_row.get(col) not in (None, ""):
+            return str(df_row.get(col))
+    return ""
+
+
+def select_kb_candidates(kb: List[Dict], intent_norm: str, tone: str, urg_bucket: str, subintent_hint: str) -> List[str]:
+    if not kb:
+        return []
+    intent_norm_l = (intent_norm or "Generic").strip().lower()
+    # primary intent match (case-insensitive)
+    primary = [r for r in kb if (r.get("intent","") or "").strip().lower() == intent_norm_l]
+    if not primary:
+        primary = [r for r in kb if (r.get("intent","") or "").strip().lower() == "generic"]
+    if not primary:
+        primary = kb
+
+    # soft filter: prefer tone/urg matches but keep others
+    def score_row(r):
+        score = 0
+        if r.get("tone") and tone and tone.strip().lower() in r.get("tone","" ).strip().lower():
+            score += 2
+        if r.get("urgency_bucket") and urg_bucket and urg_bucket.strip().lower() in r.get("urgency_bucket","" ).strip().lower():
+            score += 1
+        # subintent boost
+        if subintent_hint:
+            if subintent_hint.lower() in (r.get("subintent","") or "").lower():
+                score += 3
+            if subintent_hint.lower() in (r.get("tags","") or "").lower():
+                score += 2
+        return score
+
+    scored = sorted(primary, key=lambda r: score_row(r), reverse=True)
+    # collect replies, dedupe preserving order
+    out = []
+    seen = set()
+    for r in scored:
+        rep = (r.get("reply") or "").strip()
+        if not rep:
+            continue
+        k = rep.casefold()
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(rep)
+        if len(out) >= 10:
+            break
+    return out
+
+
+def pick_deterministic(candidates: List[str], seed_fields: List[str]) -> str:
+    if not candidates:
+        return ""
+    key = "".join([str(s or "") for s in seed_fields])
+    h = hashlib.md5(key.encode("utf-8")).hexdigest()
+    seed = int(h[:8], 16)
+    idx = seed % len(candidates)
+    return candidates[idx]
+
+
+# --- helpers variété + perfs ---
+_norm_space_re = re.compile(r"\s+")
+_norm_punct_re = re.compile(r"\s+([?.!])")
+
+def normalize_reply(s: str) -> str:
+    s = (_norm_space_re.sub(" ", (s or "").strip()))
+    s = (_norm_punct_re.sub(r"\1", s))
+    return s
+
+def build_kb_index(kb_rows: List[Dict]):
+    """Indexe la KB par intent (lower) et pré-calcule champs normalisés pour scoring rapide."""
+    by_intent = {}
+    for r in kb_rows:
+        it = (r.get("intent") or "").strip().lower() or "generic"
+        r["_tone"] = (r.get("tone") or "").lower()
+        r["_urg"]  = (r.get("urgency_bucket") or "").lower()
+        r["_sub"]  = (r.get("subintent") or "").lower()
+        r["_tags"] = (r.get("tags") or "").lower()
+        r["_op"]   = (r.get("opener") or "").strip()
+        r["_bd"]   = (r.get("body") or "").strip()
+        r["_cta"]  = (r.get("cta") or "").strip()
+        r["_rep"]  = normalize_reply(r.get("reply",""))
+        by_intent.setdefault(it, []).append(r)
+    return by_intent
+
+def select_kb_candidates_indexed(by_intent: Dict[str, List[Dict]], fallback_rows: List[Dict],
+                                 intent_norm: str, tone: str, urg_bucket: str, subintent_hint: str) -> List[str]:
+    """Retourne jusqu'à 30 candidats (reply + recomposition opener+body+cta), dédupliqués."""
+    key = (intent_norm or "Generic").strip().lower()
+    primary = by_intent.get(key) or by_intent.get("generic") or fallback_rows
+    subhint = (subintent_hint or "").lower()
+
+    def score_row(r):
+        s = 0
+        if tone and tone in r["_tone"]: s += 2
+        if urg_bucket and urg_bucket in r["_urg"]: s += 1
+        if subhint:
+            if subhint in r["_sub"]:  s += 3
+            if subhint in r["_tags"]: s += 2
+        return s
+
+    scored = sorted(primary, key=score_row, reverse=True)
+
+    seen, out = set(), []
+    for r in scored:
+        # 1) reply prêt à l'emploi
+        if r["_rep"]:
+            k = r["_rep"].casefold()
+            if k not in seen:
+                seen.add(k); out.append(r["_rep"])
+        # 2) recomposition opener + body + cta
+        if r["_bd"] and r["_cta"]:
+            rep2 = r["_op"] + (" " if r["_op"] else "") + r["_bd"]
+            rep2 = normalize_reply(rep2)
+            if not rep2.endswith((".", "!", "?")):
+                rep2 += "."
+            rep2 = normalize_reply(rep2 + " " + r["_cta"])
+            k2 = rep2.casefold()
+            if k2 not in seen:
+                seen.add(k2); out.append(rep2)
+        if len(out) >= 30:
+            break
+    return out
+
+def get_subintent_hint(row) -> str:
+    for col in ("primary_theme","themes_primary","themes","theme","topic"):
+        if col in row.index:
+            val = row[col]
+            if pd.notna(val) and str(val).strip():
+                return str(val)
+    return ""
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", required=True)
@@ -209,6 +449,21 @@ def main():
     pre_emb = None
     if not use_distilled and len(to_call_texts) > 0:
         pre_emb = mean_pooling_last_hidden(mdl, tok, to_call_texts, device, bs=args.hf_batch, max_length=args.intent_max_length)
+
+    # Load local KB once (silent if absent) with multiple fallbacks
+    kb_candidates = [
+        os.path.join(os.getcwd(), "kb_replies_rich.csv"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "kb_replies_rich.csv"),
+    ]
+    try:
+        kb_candidates.append(os.path.join(os.path.dirname(os.path.abspath(args.input)), "kb_replies_rich.csv"))
+    except Exception:
+        pass
+
+    kb_path = next((p for p in kb_candidates if p and os.path.exists(p)), None)
+    KB_RICH = load_kb_rich(kb_path) if kb_path else []
+    KB_AVAILABLE = bool(KB_RICH)
+    KB_INDEX = build_kb_index(KB_RICH) if KB_AVAILABLE else {}
 
     results = {}
     to_store_items = []
@@ -308,6 +563,37 @@ def main():
         for j, out in enumerate(outs):
             global_idx = to_call_idx[offset + j] if (offset + j) < len(to_call_idx) else None
             if global_idx is not None:
+                # integrate KB-based deterministic reply selection if KB available
+                try:
+                    if KB_AVAILABLE:
+                        # df is aligned; global_idx is position in rows
+                        row = df.iloc[global_idx]
+                        intent_curr = out.get("intent_text", "")
+                        s_label = out.get("sentiment_text", "")
+                        urg = out.get("urgency_0_3", None)
+                        intent_norm = normalize_intent(intent_curr)
+                        tone = infer_tone_from(s_label, urg)
+                        urg_bucket = infer_urgency_bucket(urg)
+                        subintent_hint = get_subintent_hint(row)
+                        # use indexed selection for speed/diversity
+                        candidates = select_kb_candidates_indexed(KB_INDEX, KB_RICH, intent_norm, tone, urg_bucket, subintent_hint)
+                        if candidates:
+                            # build seed from available id or text for deterministic selection
+                            tweet_id_or_text = ""
+                            for cid in ("id_str","tweet_id","status_id","id"):
+                                if cid in df.columns:
+                                    val = row.get(cid, "")
+                                    if pd.notna(val) and str(val).strip():
+                                        tweet_id_or_text = str(val).strip()
+                                        break
+                            if not tweet_id_or_text:
+                                tweet_id_or_text = row.get(text_col, "")
+                            chosen = pick_deterministic(candidates, [tweet_id_or_text, intent_norm, str(urg or "")])
+                            if chosen:
+                                out["reply_suggestion"] = chosen
+                except Exception:
+                    # on any error, keep existing out["reply_suggestion"] (fallback)
+                    pass
                 results[global_idx] = out
             h = sha1_of_text(chunk[j])
             cur.execute("INSERT OR REPLACE INTO cache(h,json,ts) VALUES(?,?,?)", (h, json.dumps(out, ensure_ascii=False), int(time.time())))
